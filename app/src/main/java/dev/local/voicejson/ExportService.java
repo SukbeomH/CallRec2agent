@@ -22,17 +22,18 @@ import java.util.Set;
 
 public class ExportService extends AccessibilityService {
     static final String DRIVE = "com.google.android.apps.docs";
+    static final String SHARE_LABEL = "전사 Drive 확인";
     static final String RECORDER = "com.sec.android.app.voicenote";
     static ExportService instance;
     enum Outcome { RUNNING, COMPLETED, STOPPED }
-    record Snapshot(String id, Outcome outcome, int saved, int skipped, String message) {}
+    record Snapshot(String id, Outcome outcome, int saved, int skipped, int unchanged, String message) {}
     private String runId;
     private Outcome outcome;
-    private enum Stage { IDLE, PREPARING, SELECT, OPEN, MENU, FORMAT, CHOOSER, DRIVE, SAVE, VERIFY, RETURN }
+    private enum Stage { IDLE, PREPARING, SELECT, OPEN, MENU, FORMAT, CHOOSER, RECEIVING, DRIVE, SAVE, VERIFY, RETURN }
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Stage stage = Stage.IDLE;
     private boolean batch;
-    private int limit, saved, skipped, scrolls, chooserAttempts;
+    private int limit, saved, skipped, unchanged, scrolls, chooserAttempts;
     private long deadline, nextAction, openedAt, outsideSince;
     private String pendingTitle, pendingKey, lastCursor = "";
     private String lastScrollDiagnostic = "none";
@@ -41,7 +42,7 @@ public class ExportService extends AccessibilityService {
     private final java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor();
     private java.util.concurrent.Future<?> task;
     private boolean checking, saveScreenLeft;
-    private String shareName, driveAccount;
+    private String shareName, sourceName, sourceHash, driveAccount;
     private Set<String> beforeSave = Set.of();
     private int absentFrames;
 
@@ -69,7 +70,7 @@ public class ExportService extends AccessibilityService {
 
     String start(boolean all, int maximum) {
         if (stage != Stage.IDLE) stop("이전 실행을 중지했습니다.");
-        generation++; batch = all; limit = maximum; saved = skipped = scrolls = 0;
+        generation++; batch = all; limit = maximum; saved = skipped = unchanged = scrolls = 0;
         visited.clear(); pendingTitle = pendingKey = null; lastCursor = ""; outsideSince = 0;
         Intent launch = getPackageManager().getLaunchIntentForPackage(RECORDER);
         if (launch == null) { status("삼성 음성녹음 앱이 설치돼 있지 않습니다."); return null; }
@@ -117,16 +118,46 @@ public class ExportService extends AccessibilityService {
         Outcome state;
         try { state = Outcome.valueOf(prefs.getString("run_outcome", Outcome.STOPPED.name())); }
         catch (IllegalArgumentException invalid) { state = Outcome.STOPPED; }
-        return new Snapshot(id, state, prefs.getInt("run_saved", 0), prefs.getInt("run_skipped", 0), prefs.getString("run_message", ""));
+        return new Snapshot(id, state, prefs.getInt("run_saved", 0), prefs.getInt("run_skipped", 0), prefs.getInt("run_unchanged", 0), prefs.getString("run_message", ""));
     }
     boolean running() { return stage != Stage.IDLE; }
+    long shareToken() { return stage == Stage.RECEIVING ? generation : -1; }
+    void shareFailed(long token, String message) { if (token == generation && running()) stop("TXT 확인·전송 중지 · " + message); }
+    void reviewShare(long token, android.net.Uri uri, java.util.function.Consumer<Boolean> done) {
+        if (token != generation || stage != Stage.RECEIVING || checking) { done.accept(false); return; }
+        checking = true; deadline = SystemClock.elapsedRealtime() + 300000;
+        String expected = pendingTitle;
+        task = worker.submit(() -> {
+            try {
+                DriveFolder folder = new DriveFolder(this);
+                DriveFolder.Source source = folder.inspect(uri);
+                if (!DirectShare.matchesRecording(source.name(), expected)) throw new IllegalArgumentException("공유된 TXT가 선택한 녹음과 다릅니다.");
+                DriveFolder.Receipt existing = folder.findExisting(source.name(), source.sha256(), new TransferHistory(this).preferredDocument(source.name()));
+                handler.post(() -> {
+                    if (generation != token || stage != Stage.RECEIVING) { done.accept(false); return; }
+                    checking = false; sourceName = source.name(); sourceHash = source.sha256();
+                    if (existing != null) { done.accept(false); unchanged(existing); }
+                    else { transition(Stage.DRIVE); deadline = SystemClock.elapsedRealtime() + 300000; done.accept(true); }
+                });
+            } catch (Exception failure) { handler.post(() -> { if (token == generation) shareFailed(token, failure.getMessage()); done.accept(false); }); }
+        });
+    }
+    private String counts() { return "새로 저장 " + saved + "개 · 변경 없음 " + unchanged + "개 · 전사 없음 " + skipped + "개"; }
+    private void unchanged(DriveFolder.Receipt receipt) {
+        new TransferHistory(this).remember(sourceName, sourceHash, receipt);
+        unchanged++; status("같은 내용의 Drive TXT 확인 · " + counts()); advance();
+    }
     private void received(DriveFolder.Receipt receipt) {
+        new TransferHistory(this).remember(sourceName, sourceHash, receipt);
         saved++;
-        if (pendingKey != null) visited.add(pendingKey);
         getSharedPreferences("drive", 0).edit().putString("confirmed_account", driveAccount)
             .putString("last_file", receipt.name()).putString("last_uri", receipt.uri())
             .putString("last_sha256", receipt.sha256()).putInt("last_bytes", receipt.bytes()).apply();
-        if (!batch || visited.size() >= limit) { complete("Drive 폴더 읽기 확인 · TXT " + saved + "개 · 전사 없음 " + skipped + "개"); return; }
+        advance();
+    }
+    private void advance() {
+        if (pendingKey != null) visited.add(pendingKey);
+        if (!batch || visited.size() >= limit) { complete("완료 · " + counts()); return; }
         transition(Stage.RETURN); deadline = SystemClock.elapsedRealtime() + 60000;
         Intent launch = getPackageManager().getLaunchIntentForPackage(RECORDER);
         if (launch != null) { launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(launch); }
@@ -156,7 +187,7 @@ public class ExportService extends AccessibilityService {
         nextAction = SystemClock.elapsedRealtime() + 1200;
         task = worker.submit(() -> {
             try {
-                DriveFolder.Receipt receipt = new DriveFolder(this).verify(name, beforeSave);
+                DriveFolder.Receipt receipt = new DriveFolder(this).verify(name, beforeSave, sourceHash);
                 handler.post(() -> {
                     if (generation != token || stage != Stage.VERIFY) return;
                     checking = false;
@@ -171,6 +202,7 @@ public class ExportService extends AccessibilityService {
         if (now > deadline) { stop("시간 초과 · 마지막 TXT의 저장을 확인하지 못했습니다. 재시도 전에 Drive를 확인하세요. 확인된 파일 " + saved + "개"); return; }
         if (now < nextAction || stage == Stage.PREPARING) return;
         if (getSystemService(android.app.KeyguardManager.class).isKeyguardLocked()) { stop("잠금 화면에서 중지했습니다."); return; }
+        if (stage == Stage.RECEIVING) return;
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null || root.getPackageName() == null) return;
         String pkg = root.getPackageName().toString();
@@ -205,7 +237,7 @@ public class ExportService extends AccessibilityService {
                     }
                 }
                 if (scrolls >= 100) { stop("목록 스크롤 한도에 도달했습니다. 처리 " + saved + "개"); return; }
-                if (lastCursor.equals(cursor.toString())) { complete("목록 끝 · 처리 " + saved + "개, 전사 없음 " + skipped + "개"); return; }
+                if (lastCursor.equals(cursor.toString())) { complete("목록 끝 · " + counts()); return; }
                 lastCursor = cursor.toString(); scrolls++;
                 List<AccessibilityNodeInfo> lists = ids(root, "list");
                 AccessibilityNodeInfo scroll = lists.isEmpty() ? null : lists.get(0);
@@ -236,9 +268,7 @@ public class ExportService extends AccessibilityService {
                     if (rightmost != null) { transition(Stage.MENU); if (!click(rightmost)) stop("녹음 메뉴를 열 수 없습니다."); }
                 } else if (now - openedAt > 5000) {
                     if (!batch) { stop("열린 화면에 기존 전사가 없습니다. 전사가 있는 녹음을 먼저 여세요."); return; }
-                    visited.add(pendingKey); skipped++;
-                    if (visited.size() >= limit) complete("완료 · 처리 " + saved + "개, 전사 없음 " + skipped + "개");
-                    else transition(Stage.RETURN);
+                    skipped++; advance();
                 }
             }
             case MENU -> {
@@ -252,17 +282,16 @@ public class ExportService extends AccessibilityService {
                 if (txt != null) { transition(Stage.CHOOSER); if (!click(txt)) stop("TXT 공유를 선택할 수 없습니다."); }
             }
             case CHOOSER -> {
-                if (DRIVE.equals(pkg)) {
-                    shareName = null; driveAccount = null; saveScreenLeft = false; absentFrames = 0;
-                    transition(Stage.DRIVE); deadline = now + 300000; return;
-                }
+                if (DRIVE.equals(pkg)) { stop("중복 확인을 위해 공유 대상 ‘" + SHARE_LABEL + "’를 선택해야 합니다."); return; }
                 if (!chooser) return;
                 AccessibilityNodeInfo target = null;
-                for (AccessibilityNodeInfo node : root.findAccessibilityNodeInfosByText("Drive"))
-                    if (node.isVisibleToUser() && DirectShare.isDriveAppLabel(text(node), node.getViewIdResourceName())) { target = node; break; }
+                for (AccessibilityNodeInfo node : root.findAccessibilityNodeInfosByText(SHARE_LABEL))
+                    if (node.isVisibleToUser() && DirectShare.isAppLabel(text(node), node.getViewIdResourceName(), SHARE_LABEL)) { target = node; break; }
                 if (target != null) {
-                    if (++chooserAttempts > 3) { stop("Drive 앱 화면으로 이동하지 못했습니다."); return; }
-                    if (!click(target)) stop("Drive 앱 항목을 누를 수 없습니다.");
+                    if (++chooserAttempts > 3) { stop("TXT 검사 화면으로 이동하지 못했습니다."); return; }
+                    shareName = sourceName = sourceHash = driveAccount = null; saveScreenLeft = false; absentFrames = 0;
+                    transition(Stage.RECEIVING); deadline = now + 300000;
+                    if (!click(target)) stop("TXT 확인 항목을 누를 수 없습니다.");
                     nextAction = now + 1800; return;
                 }
                 AccessibilityNodeInfo more = exact(root, "더보기");
@@ -273,14 +302,24 @@ public class ExportService extends AccessibilityService {
                 SaveScreen screen = driveScreen(root);
                 if (screen == null || checking) return;
                 if (!folderMatches(screen)) { status("Drive 저장 위치를 선택한 폴더로 바꿔 주세요. 폴더가 일치하면 계속합니다."); return; }
-                if (!DirectShare.matchesRecording(screen.name(), pendingTitle)) { stop("공유된 TXT 이름이 선택한 녹음과 다릅니다."); return; }
+                if (!screen.name().equals(sourceName)) { stop("공유된 TXT 이름이 선택한 녹음과 다릅니다."); return; }
                 shareName = screen.name(); driveAccount = screen.account(); checking = true; long token = generation;
                 task = worker.submit(() -> {
                     try {
-                        Set<String> before = new DriveFolder(this).snapshot();
+                        DriveFolder folder = new DriveFolder(this);
+                        DriveFolder.Receipt existing = folder.findExisting(sourceName, sourceHash, new TransferHistory(this).preferredDocument(sourceName));
+                        Set<String> before = existing == null ? folder.snapshot() : Set.of();
                         handler.post(() -> {
                             if (token != generation || stage != Stage.DRIVE) return;
-                            beforeSave = before; checking = false; transition(Stage.SAVE);
+                            checking = false;
+                            if (existing != null) {
+                                AccessibilityNodeInfo currentRoot = getRootInActiveWindow();
+                                SaveScreen current = driveScreen(currentRoot);
+                                if (current == null || !folderMatches(current) || !sourceName.equals(current.name())) { stop("중복 확인 중 Drive 화면이 바뀌었습니다."); return; }
+                                AccessibilityNodeInfo cancel = exact(currentRoot, "취소");
+                                if (cancel == null || !click(cancel)) { stop("같은 TXT가 발견됐습니다. Drive 업로드 화면을 취소한 뒤 다시 시작하세요."); return; }
+                                unchanged(existing);
+                            } else { beforeSave = before; transition(Stage.SAVE); }
                         });
                     } catch (Exception failure) { handler.post(() -> { if (token == generation) stop("Drive 저장 전 확인 실패 · " + failure.getMessage()); }); }
                 });
@@ -323,7 +362,8 @@ public class ExportService extends AccessibilityService {
             case OPEN -> "기존 전사 확인";
             case MENU -> "공유 메뉴 확인";
             case FORMAT -> "TXT 공유 선택";
-            case CHOOSER -> "Drive로 직접 공유";
+            case CHOOSER -> "TXT 확인 도우미로 공유";
+            case RECEIVING -> "기존 Drive TXT와 내용 비교";
             case DRIVE -> "Drive 저장 위치 확인";
             case SAVE -> "Drive 저장 확인";
             case VERIFY -> "선택한 Drive 폴더에서 TXT 다시 읽기";
@@ -331,12 +371,12 @@ public class ExportService extends AccessibilityService {
             case RETURN -> "목록으로 돌아가기";
             default -> "대기";
         };
-        status("진행 중 · " + label + " · 저장 " + saved + "개");
+        status("진행 중 · " + label + " · " + counts());
     }
     private void status(String message) {
         var edit = getSharedPreferences("status", 0).edit().putString("automation", message);
         if (runId != null) edit.putString("run_id", runId).putString("run_outcome", outcome.name())
-            .putInt("run_saved", saved).putInt("run_skipped", skipped).putString("run_message", message);
+            .putInt("run_saved", saved).putInt("run_skipped", skipped).putInt("run_unchanged", unchanged).putString("run_message", message);
         edit.apply();
         NotificationManager manager = getSystemService(NotificationManager.class);
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -378,7 +418,7 @@ public class ExportService extends AccessibilityService {
         return null;
     }
     @Override protected void dump(java.io.FileDescriptor fd, java.io.PrintWriter writer, String[] args) {
-        writer.println("stage=" + stage + " saved=" + saved + " skipped=" + skipped + " visited=" + visited.size());
+        writer.println("stage=" + stage + " saved=" + saved + " skipped=" + skipped + " unchanged=" + unchanged + " visited=" + visited.size());
         writer.println("lastScroll=" + lastScrollDiagnostic);
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root != null) writer.println("package=" + root.getPackageName() + " rowTitles=" + ids(root,"listRow_title").size() + " rowDates=" + ids(root,"listRow_date").size());

@@ -159,13 +159,13 @@ public class MainActivity extends Activity {
         paragraph(access,"접근성 권한과 Drive 폴더를 준비하면 다음 단계로 이동합니다. ‘제한된 설정’이 표시되면 앱 정보에서 ‘제한된 설정 허용’을 직접 선택하세요.");
         action(access,"접근성 설정 열기",true,() -> { persist(); startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); });
         driveCard();
-        note("기존 전사 TXT를 삼성 앱에서 바로 Drive로 보냅니다. Drive 앱과 인터넷 연결이 필요합니다. llm.txt는 시작할 때 같은 폴더에 자동 준비됩니다.");
+        note("기존 전사 TXT를 받아 내용 해시를 비교하고 새 내용만 Drive로 보냅니다. Drive 앱과 인터넷 연결이 필요합니다. llm.txt는 시작할 때 같은 폴더에 자동 준비됩니다.");
         if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             action(body,"진행·중지 알림 허용",false,() -> requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},1));
         action(footer,"준비 상태 다시 확인",true,() -> { if (ready()) go(afterPrepare); else new AlertDialog.Builder(this).setMessage("접근성 설정에서 ‘전사 Drive 공유 도우미’가 켜졌는지 확인해 주세요.").setPositiveButton("확인",null).show(); });
     }
     private void choose() {
-        heading("어떤 TXT를 보낼까요?", "삼성 음성녹음의 기존 전사를 Drive로 바로 공유합니다.");
+        heading("어떤 TXT를 보낼까요?", "기존 Drive TXT와 비교해 새 전사·수정분만 보냅니다.");
         modeCard("한 건만 저장", "열어 둔 녹음 하나의 전사 TXT를 Drive에 저장합니다.", false);
         modeCard("여러 건 순서대로 저장", "현재 녹음 목록 위치부터 아래로 진행합니다.", true);
         if (batch) {
@@ -173,7 +173,7 @@ public class MainActivity extends Activity {
             countInput = new EditText(this); countInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); countInput.setSingleLine(true);
             countInput.setText(String.valueOf(maximum)); countInput.setSelectAllOnFocus(true); countInput.setTextColor(INK); countInput.setTextSize(24);
             countInput.setContentDescription("최대 녹음 수, 1부터 500까지"); card.addView(countInput,new LinearLayout.LayoutParams(-1,dp(58)));
-            paragraph(card,"1~500건 · 전사가 없는 녹음은 건너뜁니다.");
+            paragraph(card,"1~500건 검사 · 변경 없음·전사 없음도 검사 수에 포함됩니다. 오래된 수정분을 찾으려면 검사 범위를 충분히 늘리세요.");
         }
         driveCard();
         if (ExportService.readSnapshot(this) != null) action(body, "최근 결과 보기", false, () -> {
@@ -226,7 +226,7 @@ public class MainActivity extends Activity {
         heading("전사를 저장하고 있어요", "삼성 앱의 공유 화면을 도우미가 조작합니다.");
         LinearLayout progress=card(); liveStatus=text("전송 상태 확인 중…",20,true,BLUE); progress.addView(liveStatus);
         ExportService.Snapshot session=ExportService.readSnapshot(this); if(session!=null)liveStatus.setText(session.message());
-        paragraph(progress,"완료하면 이 화면으로 돌아와 결과를 보여 드립니다. 선택한 Drive 폴더에서 새 TXT를 다시 읽어 확인한 뒤 다음 녹음으로 넘어갑니다. 처음 한 건은 Drive 계정·폴더를 확인하고 업로드를 한 번 눌러 주세요.");
+        paragraph(progress,"완료하면 이 화면으로 돌아와 결과를 보여 드립니다. 기존 Drive TXT와 내용을 비교해 변경 없는 녹음은 건너뛰고, 새로 보낸 TXT는 원본 해시까지 다시 확인한 뒤 다음 녹음으로 넘어갑니다. 처음 한 건은 Drive 계정·폴더를 확인하고 업로드를 한 번 눌러 주세요.");
         note("화면 잠금을 풀어 두세요. 중지해도 지금까지 저장한 파일은 남아 있습니다.");
         action(body,"삼성 앱의 진행 화면 보기",false,()->{ Intent launch=getPackageManager().getLaunchIntentForPackage(ExportService.RECORDER); if(launch!=null)startActivity(launch); });
         action(footer,"전송 중지",true,this::stop);
@@ -236,10 +236,10 @@ public class MainActivity extends Activity {
         ExportService.Snapshot session = ExportService.readSnapshot(this);
         boolean matched = session != null && watchedRun != null && watchedRun.equals(session.id());
         boolean complete = matched && session.outcome() == ExportService.Outcome.COMPLETED;
-        heading(complete ? "Drive TXT 저장을 확인했어요" : "최근 실행 결과", "선택한 폴더에서 TXT를 다시 읽은 파일만 집계합니다.");
+        heading(complete ? "전송 검사를 마쳤어요" : "최근 실행 결과", "실제 TXT 내용을 확인해 새 저장과 변경 없음을 구분합니다.");
         if (matched) {
-            LinearLayout summary = card(); summary.addView(text("저장 확인 " + session.saved() + "건", 24, true, BLUE));
-            paragraph(summary, "전사 없음 " + session.skipped() + "건"); paragraph(summary, session.message());
+            LinearLayout summary = card(); summary.addView(text("새로 저장 " + session.saved() + "건", 24, true, BLUE));
+            paragraph(summary, "변경 없음 " + session.unchanged() + "건 · 전사 없음 " + session.skipped() + "건"); paragraph(summary, session.message());
         }
         var drive = getSharedPreferences("drive", 0);
         LinearLayout last = card(); last.addView(text("마지막으로 확인한 TXT", 17, true, INK));
@@ -384,7 +384,7 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle(title).setView(scroll).setPositiveButton("닫기",null).show();
     }
     private void manual() {
-        String guide = "1. 처음 준비\n접근성 설정에서 ‘전사 Drive 공유 도우미’를 켜고 Drive 저장 폴더를 선택합니다. 폴더가 없으면 ‘하위 폴더 생성·선택’에서 이름을 입력하고 상위 Drive 위치를 고릅니다. 같은 이름의 폴더는 재사용합니다. 에이전트도 접근할 수 있는 전용 폴더를 사용하세요.\n\n2. 녹음 고르기\n한 건 또는 여러 건을 고릅니다. 삼성 앱을 열어 전사가 보이는 녹음이나 시작할 목록 위치를 준비한 뒤 최근 앱에서 돌아옵니다.\n\n3. 전송 시작\n시작을 누르면 TXT → Drive 공유를 자동 처리합니다. 첫 한 건은 Drive에서 같은 계정·폴더를 고르고 업로드를 한 번 눌러 주세요. 선택한 폴더에서 저장을 확인한 뒤 그 계정을 기억합니다. 이후 같은 대상으로는 저장도 자동으로 누릅니다.\n\n4. 저장 확인\nDrive 폴더에서 이번 실행의 새 TXT를 다시 읽은 뒤 다음 녹음으로 넘어갑니다. 삼성 원본 TXT 이름을 유지합니다. 같은 녹음을 다시 실행하면 사본이 생길 수 있습니다. JSON 변환과 별도 전사 업로드 단계는 없습니다.\n\n5. 에이전트 활용\nllm.txt가 시작할 때 같은 폴더에 자동 준비됩니다. ‘에이전트 프롬프트 복사’로 계정·위치·읽기 안내를 복사할 수 있습니다. Drive 폴더 링크를 설정하면 프롬프트에도 포함됩니다. 에이전트에게 이 폴더의 llm.txt부터 읽고 관련 TXT를 근거로 답하도록 요청하세요. 기존 JSON과 index.json은 삭제하지 않지만 새 TXT의 색인으로 사용하지 않습니다.\n\n실행 중에는 잠금을 풀고 다른 앱을 사용하지 마세요. 앱·알림의 중지로 멈출 수 있습니다. 확인이 끝나지 않은 마지막 파일은 Drive에서 확인한 뒤 재시도하세요. 파일 재읽기는 Drive 서버 동기화 완료를 보증하지 않습니다. Wi-Fi 대기 시 Drive 앱에서 업로드를 완료해야 에이전트가 볼 수 있습니다.";
+        String guide = "1. 처음 준비\n접근성 설정에서 ‘전사 Drive 공유 도우미’를 켜고 Drive 저장 폴더를 선택합니다. 폴더가 없으면 ‘하위 폴더 생성·선택’에서 이름을 입력하고 상위 Drive 위치를 고릅니다. 같은 이름의 폴더는 재사용합니다. 에이전트도 접근할 수 있는 전용 폴더를 사용하세요.\n\n2. 녹음 고르기\n한 건 또는 여러 건을 고릅니다. 삼성 앱을 열어 전사가 보이는 녹음이나 시작할 목록 위치를 준비한 뒤 최근 앱에서 돌아옵니다.\n\n3. 전송 시작\n시작을 누르면 TXT → 전사 Drive 확인 → Drive 공유를 자동 처리합니다. 확인 도우미가 원본 TXT와 Drive 내용을 비교하며, 같은 내용은 업로드하지 않습니다. 첫 한 건은 Drive에서 같은 계정·폴더를 고르고 업로드를 한 번 눌러 주세요. 선택한 폴더에서 저장을 확인한 뒤 그 계정을 기억합니다. 이후 같은 대상으로는 저장도 자동으로 누릅니다.\n\n4. 저장 확인\nDrive 폴더에서 이번 실행의 새 TXT를 다시 읽은 뒤 다음 녹음으로 넘어갑니다. 삼성 원본 TXT 이름을 유지합니다. 같은 내용의 TXT가 선택한 Drive 폴더에 있으면 건너뜁니다. 새 전사와 수정된 TXT만 추가하고 기존 버전은 보존합니다. JSON 변환과 별도 전사 업로드 단계는 없습니다.\n\n5. 에이전트 활용\nllm.txt가 시작할 때 같은 폴더에 자동 준비됩니다. ‘에이전트 프롬프트 복사’로 계정·위치·읽기 안내를 복사할 수 있습니다. Drive 폴더 링크를 설정하면 프롬프트에도 포함됩니다. 에이전트에게 이 폴더의 llm.txt부터 읽고 관련 TXT를 근거로 답하도록 요청하세요. 기존 JSON과 index.json은 삭제하지 않지만 새 TXT의 색인으로 사용하지 않습니다.\n\n실행 중에는 잠금을 풀고 다른 앱을 사용하지 마세요. 앱·알림의 중지로 멈출 수 있습니다. 확인이 끝나지 않은 마지막 파일은 Drive에서 확인한 뒤 재시도하세요. 파일 재읽기는 Drive 서버 동기화 완료를 보증하지 않습니다. Wi-Fi 대기 시 Drive 앱에서 업로드를 완료해야 에이전트가 볼 수 있습니다.";
         preview(guide, "폰에서 TXT를 Drive로 보내기");
     }
     private void heading(String title,String description) { body.addView(text(title,28,true,INK)); space(body,10); paragraph(body,description); space(body,14); }

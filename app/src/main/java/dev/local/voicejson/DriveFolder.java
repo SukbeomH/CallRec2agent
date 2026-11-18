@@ -7,13 +7,13 @@ import android.provider.DocumentsContract;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 
 final class DriveFolder {
     record Document(Uri uri, String name) {}
     record Receipt(String name, String uri, int bytes, String sha256) {}
+    record Source(String name, String sha256) {}
     private final Context context;
     private final Uri tree;
     private final String folderId;
@@ -41,11 +41,33 @@ final class DriveFolder {
             if (input == null) throw new IllegalStateException("Drive 파일을 다시 읽을 수 없습니다.");
             byte[] buffer = new byte[8192]; int count;
             while ((count = input.read(buffer)) != -1) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
                 if (out.size() + count > 16 * 1024 * 1024) throw new IllegalStateException("확인할 TXT가 16MB를 넘습니다.");
                 out.write(buffer, 0, count);
             }
             return out.toByteArray();
         }
+    }
+    Source inspect(Uri source) throws Exception {
+        String name;
+        try (Cursor cursor = context.getContentResolver().query(source, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor == null || !cursor.moveToFirst()) throw new IllegalArgumentException("공유된 TXT 이름을 읽을 수 없습니다.");
+            name = cursor.getString(0);
+        }
+        if (name == null || !name.toLowerCase(java.util.Locale.ROOT).endsWith(".txt")) throw new IllegalArgumentException("TXT 파일만 전송할 수 있습니다.");
+        byte[] bytes = read(source);
+        if (!DirectShare.isTranscript(bytes)) throw new IllegalArgumentException("삼성 전사 TXT 형식을 확인하지 못했습니다.");
+        return new Source(name, hash(bytes));
+    }
+    Receipt findExisting(String name, String sourceHash, String preferredId) throws Exception {
+        List<Document> files = children();
+        if (files == null) throw new IllegalStateException("Drive 폴더 목록이 로딩 중입니다. 중복 확인 없이 전송하지 않습니다. 잠시 후 다시 시작하세요.");
+        List<DuplicateFinder.File> candidates = new ArrayList<>();
+        for (Document document : files) candidates.add(new DuplicateFinder.File(DocumentsContract.getDocumentId(document.uri()), document.name()));
+        DuplicateFinder.Match existing = DuplicateFinder.find(candidates, name, sourceHash, preferredId,
+            id -> read(DocumentsContract.buildDocumentUriUsingTree(tree, id)));
+        if (existing == null) return null;
+        return new Receipt(existing.file().name(), DocumentsContract.buildDocumentUriUsingTree(tree, existing.file().id()).toString(), existing.bytes(), existing.sha256());
     }
     java.util.Set<String> snapshot() throws Exception {
         List<Document> files = children();
@@ -75,7 +97,7 @@ final class DriveFolder {
         }
         throw new IllegalStateException("상위 Drive 폴더 목록 로딩 시간이 초과됐습니다.");
     }
-    Receipt verify(String name, java.util.Set<String> before) throws Exception {
+    Receipt verify(String name, java.util.Set<String> before, String sourceHash) throws Exception {
         List<Document> files = children();
         if (files == null) return null;
         List<Document> matches = files.stream().filter(file -> DirectShare.newlySaved(file.name(), name, file.uri().toString(), before)).collect(java.util.stream.Collectors.toList());
@@ -85,7 +107,9 @@ final class DriveFolder {
         byte[] bytes = read(document.uri());
         if (bytes.length == 0) return null;
         if (!DirectShare.isTranscript(bytes)) throw new IllegalStateException("Drive의 파일에서 삼성 전사 TXT 형식을 확인하지 못했습니다.");
-        return new Receipt(name, document.uri().toString(), bytes.length, hash(bytes));
+        String actual = hash(bytes);
+        if (!TranscriptFingerprint.same(sourceHash, actual)) throw new IllegalStateException("Drive에 저장된 TXT가 공유한 원본과 다릅니다. 완료로 처리하지 않습니다.");
+        return new Receipt(name, document.uri().toString(), bytes.length, actual);
     }
     void prepareGuide() throws Exception {
         byte[] wanted;
@@ -125,8 +149,5 @@ final class DriveFolder {
         if (!hash(wanted).equals(hash(read(document)))) throw new IllegalStateException("llm.txt를 다시 읽은 내용이 다릅니다.");
         history.edit().putString(key + "_uri", document.toString()).putString(key + "_hash", hash(wanted)).commit();
     }
-    private static String hash(byte[] bytes) throws Exception {
-        byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
-        StringBuilder result = new StringBuilder(); for (byte b : digest) result.append(String.format(java.util.Locale.ROOT, "%02x", b & 255)); return result.toString();
-    }
+    private static String hash(byte[] bytes) { return TranscriptFingerprint.hash(bytes); }
 }

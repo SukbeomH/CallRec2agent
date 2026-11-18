@@ -10,7 +10,7 @@ final class AgentPrompt {
         text.append("저장 위치: ").append(location).append(" (사용자가 선택한 폴더 또는 상위 폴더/하위 폴더 표기이며, 전체 루트 경로가 아닐 수 있습니다.)\n");
         if (link != null && !link.isBlank()) text.append("폴더 링크: ").append(link).append("\n이 링크는 사용자가 지정한 위치입니다. 실제 폴더 이름과 접근 권한을 확인하세요.\n");
         else text.append("폴더 링크는 미등록입니다. 위 계정의 폴더 이름으로 검색하고 동명 폴더가 여러 개면 사용자에게 확인하세요.\n");
-        text.append("저장 방식: 삼성 음성녹음의 기존 전사 TXT를 Drive로 직접 공유했습니다. JSON 변환과 재전사는 하지 않았습니다.\n");
+        text.append("저장 방식: 삼성 음성녹음의 기존 전사 TXT를 Drive로 직접 공유했습니다. JSON 변환과 재전사는 하지 않았습니다. 도우미는 Drive의 실제 TXT와 원본 SHA-256을 비교해 같은 내용은 건너뛰고 신규·수정된 TXT만 추가하며 과거 버전은 보존합니다.\n");
         if (lastFile != null) text.append("폰에서 마지막으로 읽기 확인한 TXT: ").append(lastFile).append('\n');
         text.append("\n1. 연결된 Drive 계정이 해당 폴더에 접근 가능한지 확인하세요. 폰의 계정과 연결 계정이 다르면 공유 권한이 필요합니다.\n")
             .append("2. 폴더의 llm.txt부터 실제로 읽고, 폴더 파일 목록에서 관련 TXT를 찾아 본문을 읽으세요. 기존 index.json은 새 TXT의 색인이 아닙니다.\n")

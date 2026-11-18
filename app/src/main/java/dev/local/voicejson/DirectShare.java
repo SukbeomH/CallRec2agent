@@ -6,8 +6,8 @@ import java.util.regex.Pattern;
 
 final class DirectShare {
     private static final Pattern SPEECH = Pattern.compile("(?m)^.+?\\s{2,}\\((?:\\d{1,3}:)?[0-5]?[0-9]:[0-5][0-9]\\)\\s*$");
-    static boolean isDriveAppLabel(String text, String resourceId) {
-        return "Drive".equals(text) && "android:id/text1".equals(resourceId);
+    static boolean isAppLabel(String text, String resourceId, String label) {
+        return label.equals(text) && "android:id/text1".equals(resourceId);
     }
     static String uploadName(String displayed) {
         return displayed.endsWith(", 파일 이름 목록") ? displayed.substring(0, displayed.length() - ", 파일 이름 목록".length()) : displayed;

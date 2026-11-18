@@ -45,10 +45,12 @@ public class DirectShareTest {
         assertTrue(DirectShare.validFolderName("CallRec2agent"));
         for (String name : new String[]{"", " ", ".", "..", "a/b", "a\\b", "a\nb", "a".repeat(101)}) assertFalse(name, DirectShare.validFolderName(name));
     }
-    @Test public void choosesDriveAppLabelInsteadOfDirectShareBadge() {
-        assertTrue(DirectShare.isDriveAppLabel("Drive", "android:id/text1"));
-        assertFalse(DirectShare.isDriveAppLabel("", "com.android.intentresolver:id/sem_target_badge"));
-        assertFalse(DirectShare.isDriveAppLabel("call", "android:id/text1"));
-        assertFalse(DirectShare.isDriveAppLabel("Drive", "com.android.intentresolver:id/sem_target_badge"));
+    @Test public void choosesAppLabelInsteadOfDirectShareBadge() {
+        assertTrue(DirectShare.isAppLabel("Drive", "android:id/text1", "Drive"));
+        assertTrue(DirectShare.isAppLabel("전사 Drive 확인", "android:id/text1", "전사 Drive 확인"));
+        assertFalse(DirectShare.isAppLabel("Drive", "android:id/text1", "전사 Drive 확인"));
+        assertFalse(DirectShare.isAppLabel("", "com.android.intentresolver:id/sem_target_badge", "Drive"));
+        assertFalse(DirectShare.isAppLabel("call", "android:id/text1", "Drive"));
+        assertFalse(DirectShare.isAppLabel("Drive", "com.android.intentresolver:id/sem_target_badge", "Drive"));
     }
 }
